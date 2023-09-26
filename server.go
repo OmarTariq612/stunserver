@@ -175,6 +175,27 @@ func ProcessAndRespond(conn net.Conn, buf []byte, addr netip.AddrPort) error {
 		return err
 	}
 
+	originAddr, err := netip.ParseAddrPort(conn.LocalAddr().String())
+	if err != nil {
+		return err
+	}
+
+	// FIXME: origin address is ipv6 even though the client sent request over ipv4
+	var responseOrigin ResponseOrigin
+	localIP := originAddr.Addr()
+	if localIP.Is4() {
+		ipv4 := localIP.As4()
+		responseOrigin.IP = ipv4[:]
+	} else {
+		ipv6 := localIP.As16()
+		responseOrigin.IP = ipv6[:]
+	}
+	responseOrigin.Port = int(originAddr.Port())
+
+	if err = responseOrigin.AddTo(respMessage); err != nil {
+		return err
+	}
+
 	_, err = conn.Write(respMessage.Raw)
 	return err
 }
