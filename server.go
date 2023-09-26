@@ -2,12 +2,14 @@ package stunserver
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 )
 
 func logInfo(msg string, args ...any) {
@@ -46,7 +48,7 @@ func ListenAndServe(addr string) error {
 
 func ListenAndServeUDP(conn net.PacketConn, wg *sync.WaitGroup) {
 	defer wg.Done()
-	buf := make([]byte, 1280)
+	buf := make([]byte, MaxMessageSize)
 
 	for {
 		n, addr, err := conn.ReadFrom(buf)
@@ -54,10 +56,8 @@ func ListenAndServeUDP(conn net.PacketConn, wg *sync.WaitGroup) {
 			logError(err.Error())
 			continue
 		}
-		logInfo("received: %s", addr.String())
-		if err = handleUDPRequest(conn, addr, buf[:n]); err != nil {
-			logError(err.Error())
-		}
+		logInfo("[UDP] received: %s", addr.String())
+		handleUDPRequest(conn, addr, buf[:n])
 	}
 }
 
@@ -69,58 +69,33 @@ func ListenAndServeTCP(l net.Listener, wg *sync.WaitGroup) {
 			logError(err.Error())
 			continue
 		}
-		logInfo("received: %s", tcpConn.RemoteAddr().String())
+		logInfo("[TCP] received: %s", tcpConn.RemoteAddr().String())
 		go handleTCPRequest(tcpConn)
 	}
 }
 
-func handleUDPRequest(conn net.PacketConn, srcAddr net.Addr, buf []byte) error {
+func handleUDPRequest(conn net.PacketConn, srcAddr net.Addr, buf []byte) {
 	addrPort, err := netip.ParseAddrPort(srcAddr.String())
 	if err != nil {
-		return err
+		logError(err.Error())
+		return
 	}
 
-	var reqMessage Message
-	if err = Decode(buf, &reqMessage); err != nil {
-		return err
+	if err := ProcessAndRespond(BindPacketConn(conn, srcAddr), buf, addrPort); err != nil {
+		logError(err.Error())
 	}
-
-	respMessage, err := Build(&reqMessage, BindingSuccess)
-	if err != nil {
-		return err
-	}
-
-	var xorMappedAddr XORMappedAddress
-	ip := addrPort.Addr()
-	if ip.Is4() {
-		ipv4 := ip.As4()
-		xorMappedAddr.IP = ipv4[:]
-	} else {
-		ipv6 := ip.As16()
-		xorMappedAddr.IP = ipv6[:]
-	}
-	xorMappedAddr.Port = int(addrPort.Port())
-	if err := xorMappedAddr.AddTo(respMessage); err != nil {
-		return err
-	}
-
-	_, err = conn.WriteTo(respMessage.Raw, srcAddr)
-	return err
 }
 
 var bufs = sync.Pool{
 	New: func() any {
 		bytesBuf := new(bytes.Buffer)
-		bytesBuf.Grow(1280)
+		bytesBuf.Grow(MaxMessageSize)
 		return bytesBuf
 	},
 }
 
 func handleTCPRequest(conn net.Conn) {
-	defer func() {
-		conn.Close()
-		logInfo("closing connection [%s]", conn.RemoteAddr())
-	}()
+	defer conn.Close()
 
 	addrPort, err := netip.ParseAddrPort(conn.RemoteAddr().String())
 	if err != nil {
@@ -133,17 +108,28 @@ func handleTCPRequest(conn net.Conn) {
 	defer bufs.Put(bytesBuf)
 
 	buf := bytesBuf.AvailableBuffer()
-	buf = buf[:1280]
-	log.Println(len(buf))
+	buf = buf[:MaxMessageSize]
 
 	for {
-		_, err = io.ReadFull(conn, buf[:MessageHeaderSize])
-		if err != nil {
+		if err = conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 			logError(err.Error())
 			return
 		}
 
+		_, err = io.ReadFull(conn, buf[:MessageHeaderSize])
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				logError(err.Error())
+			}
+			return
+		}
+
 		length := bin.Uint16(buf[2:4])
+
+		if err = conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			logError(err.Error())
+			return
+		}
 
 		_, err = io.ReadFull(conn, buf[MessageHeaderSize:MessageHeaderSize+length])
 		if err != nil {
@@ -153,35 +139,42 @@ func handleTCPRequest(conn net.Conn) {
 
 		buf = buf[:MessageHeaderSize+length]
 
-		var reqMessage Message
-		if err = Decode(buf, &reqMessage); err != nil {
+		if err = conn.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
 			logError(err.Error())
 			return
 		}
 
-		respMessage, err := Build(&reqMessage, BindingSuccess)
-		if err != nil {
-			logError(err.Error())
-			return
-		}
-
-		var xorMappedAddr XORMappedAddress
-		ip := addrPort.Addr()
-		if ip.Is4() {
-			ipv4 := ip.As4()
-			xorMappedAddr.IP = ipv4[:]
-		} else {
-			ipv6 := ip.As16()
-			xorMappedAddr.IP = ipv6[:]
-		}
-		xorMappedAddr.Port = int(addrPort.Port())
-		if err := xorMappedAddr.AddTo(respMessage); err != nil {
-			logError(err.Error())
-		}
-
-		_, err = conn.Write(respMessage.Raw)
-		if err != nil {
+		if err = ProcessAndRespond(conn, buf, addrPort); err != nil {
 			logError(err.Error())
 		}
 	}
+}
+
+func ProcessAndRespond(conn net.Conn, buf []byte, addr netip.AddrPort) error {
+	var reqMessage Message
+	if err := Decode(buf, &reqMessage); err != nil {
+		return err
+	}
+
+	respMessage, err := Build(&reqMessage, BindingSuccess)
+	if err != nil {
+		return err
+	}
+
+	var xorMappedAddr XORMappedAddress
+	ip := addr.Addr()
+	if ip.Is4() {
+		ipv4 := ip.As4()
+		xorMappedAddr.IP = ipv4[:]
+	} else {
+		ipv6 := ip.As16()
+		xorMappedAddr.IP = ipv6[:]
+	}
+	xorMappedAddr.Port = int(addr.Port())
+	if err = xorMappedAddr.AddTo(respMessage); err != nil {
+		return err
+	}
+
+	_, err = conn.Write(respMessage.Raw)
+	return err
 }

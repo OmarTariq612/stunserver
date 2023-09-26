@@ -1,5 +1,7 @@
 package stunserver
 
+import "net"
+
 // Interfaces that are implemented by message attributes, shorthands for them,
 // or helpers for message fields as type or transaction id.
 type (
@@ -91,4 +93,34 @@ func XOR(dst, a, b []byte) int {
 		dst[i] = a[i] ^ b[i]
 	}
 	return n
+}
+
+type wrappedPacketConn struct {
+	net.PacketConn
+	addr net.Addr
+}
+
+func (conn *wrappedPacketConn) Read(b []byte) (n int, err error) {
+	for {
+		var addr net.Addr
+		n, addr, err = conn.ReadFrom(b)
+		if addr.Network() != conn.addr.Network() || addr.String() != conn.addr.String() {
+			continue
+		}
+		break
+	}
+	return n, err
+}
+
+func (conn *wrappedPacketConn) Write(b []byte) (n int, err error) {
+	n, err = conn.WriteTo(b, conn.addr)
+	return n, err
+}
+
+func (conn *wrappedPacketConn) RemoteAddr() net.Addr {
+	return conn.addr
+}
+
+func BindPacketConn(conn net.PacketConn, addr net.Addr) net.Conn {
+	return &wrappedPacketConn{PacketConn: conn, addr: addr}
 }

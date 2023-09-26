@@ -24,6 +24,7 @@ const (
 	MagicCookie         = 0x2112A442
 	AttributeHeaderSize = 4
 	MessageHeaderSize   = 20
+	MaxMessageSize      = 1280
 
 	// TransactionIDSize is length of transaction id array (in bytes).
 	TransactionIDSize = 12 // 96 bit
