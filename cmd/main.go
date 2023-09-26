@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"time"
 
 	"github.com/OmarTariq612/stunserver"
 )
@@ -16,7 +17,12 @@ func main() {
 		addr = os.Args[1]
 	}
 
-	if err := stunserver.ListenAndServe(addr); err != nil {
+	server, err := stunserver.NewServer(addr, stunserver.WithoutResponseOrigin, stunserver.WithReadTimeoutDuration(10*time.Second))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err = server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

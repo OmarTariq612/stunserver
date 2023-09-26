@@ -24,64 +24,114 @@ func logFatal(msg string, args ...any) {
 	log.Fatalf("[FATAL]: %s", fmt.Sprintf(msg, args...))
 }
 
-func ListenAndServe(addr string) error {
-	logInfo("Listening on: %s", addr)
-	tcpListener, err := net.Listen("tcp", addr)
+type server struct {
+	udpListener net.PacketConn
+	tcpListener net.Listener
+
+	addr               string
+	sendResponseOrigin bool
+
+	readTimeoutDuration  time.Duration
+	writeTimeoutDuration time.Duration
+}
+
+const defaultTimeoutDuration = 3 * time.Second
+
+type ServerOption func(*server)
+
+func NewServer(addr string, opts ...ServerOption) (*server, error) {
+	s := &server{
+		addr:                 addr,
+		sendResponseOrigin:   true,
+		readTimeoutDuration:  defaultTimeoutDuration,
+		writeTimeoutDuration: defaultTimeoutDuration,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
+}
+
+func WithoutResponseOrigin(s *server) {
+	s.sendResponseOrigin = false
+}
+
+func WithReadTimeoutDuration(d time.Duration) ServerOption {
+	return func(s *server) {
+		s.readTimeoutDuration = d
+	}
+}
+
+func WithWriteTimeoutDuration(d time.Duration) ServerOption {
+	return func(s *server) {
+		s.writeTimeoutDuration = d
+	}
+}
+
+func (s *server) ListenAndServe() error {
+	logInfo("Listening on: %s", s.addr)
+	var err error
+	s.tcpListener, err = net.Listen("tcp", s.addr)
 	if err != nil {
 		return err
 	}
-	defer tcpListener.Close()
-	udpConn, err := net.ListenPacket("udp", addr)
+	defer s.tcpListener.Close()
+	s.udpListener, err = net.ListenPacket("udp", s.addr)
 	if err != nil {
 		return err
 	}
-	defer udpConn.Close()
+	defer s.udpListener.Close()
+
+	addrPort, _ := netip.ParseAddrPort(s.tcpListener.Addr().String())
+	if addrPort.Addr().IsUnspecified() {
+		s.sendResponseOrigin = false
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go ListenAndServeTCP(tcpListener, &wg)
-	go ListenAndServeUDP(udpConn, &wg)
+	go s.ListenAndServeTCP(&wg)
+	go s.ListenAndServeUDP(&wg)
 	wg.Wait()
 
 	return nil
 }
 
-func ListenAndServeUDP(conn net.PacketConn, wg *sync.WaitGroup) {
+func (s *server) ListenAndServeUDP(wg *sync.WaitGroup) {
 	defer wg.Done()
 	buf := make([]byte, MaxMessageSize)
 
 	for {
-		n, addr, err := conn.ReadFrom(buf)
+		n, addr, err := s.udpListener.ReadFrom(buf)
 		if err != nil {
 			logError(err.Error())
 			continue
 		}
 		logInfo("[UDP] received: %s", addr.String())
-		handleUDPRequest(conn, addr, buf[:n])
+		s.handleUDPRequest(s.udpListener, addr, buf[:n])
 	}
 }
 
-func ListenAndServeTCP(l net.Listener, wg *sync.WaitGroup) {
+func (s *server) ListenAndServeTCP(wg *sync.WaitGroup) {
 	defer wg.Done()
 	for {
-		tcpConn, err := l.Accept()
+		tcpConn, err := s.tcpListener.Accept()
 		if err != nil {
 			logError(err.Error())
 			continue
 		}
 		logInfo("[TCP] received: %s", tcpConn.RemoteAddr().String())
-		go handleTCPRequest(tcpConn)
+		go s.handleTCPRequest(tcpConn)
 	}
 }
 
-func handleUDPRequest(conn net.PacketConn, srcAddr net.Addr, buf []byte) {
+func (s *server) handleUDPRequest(conn net.PacketConn, srcAddr net.Addr, buf []byte) {
 	addrPort, err := netip.ParseAddrPort(srcAddr.String())
 	if err != nil {
 		logError(err.Error())
 		return
 	}
 
-	if err := ProcessAndRespond(BindPacketConn(conn, srcAddr), buf, addrPort); err != nil {
+	if err := s.ProcessAndRespond(BindPacketConn(conn, srcAddr), buf, addrPort); err != nil {
 		logError(err.Error())
 	}
 }
@@ -94,7 +144,7 @@ var bufs = sync.Pool{
 	},
 }
 
-func handleTCPRequest(conn net.Conn) {
+func (s *server) handleTCPRequest(conn net.Conn) {
 	defer conn.Close()
 
 	addrPort, err := netip.ParseAddrPort(conn.RemoteAddr().String())
@@ -111,7 +161,7 @@ func handleTCPRequest(conn net.Conn) {
 	buf = buf[:MaxMessageSize]
 
 	for {
-		if err = conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		if err = conn.SetReadDeadline(time.Now().Add(s.readTimeoutDuration)); err != nil {
 			logError(err.Error())
 			return
 		}
@@ -126,7 +176,7 @@ func handleTCPRequest(conn net.Conn) {
 
 		length := bin.Uint16(buf[2:4])
 
-		if err = conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		if err = conn.SetReadDeadline(time.Now().Add(s.readTimeoutDuration)); err != nil {
 			logError(err.Error())
 			return
 		}
@@ -139,18 +189,18 @@ func handleTCPRequest(conn net.Conn) {
 
 		buf = buf[:MessageHeaderSize+length]
 
-		if err = conn.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		if err = conn.SetWriteDeadline(time.Now().Add(s.writeTimeoutDuration)); err != nil {
 			logError(err.Error())
 			return
 		}
 
-		if err = ProcessAndRespond(conn, buf, addrPort); err != nil {
+		if err = s.ProcessAndRespond(conn, buf, addrPort); err != nil {
 			logError(err.Error())
 		}
 	}
 }
 
-func ProcessAndRespond(conn net.Conn, buf []byte, addr netip.AddrPort) error {
+func (s *server) ProcessAndRespond(conn net.Conn, buf []byte, addr netip.AddrPort) error {
 	var reqMessage Message
 	if err := Decode(buf, &reqMessage); err != nil {
 		return err
@@ -161,39 +211,52 @@ func ProcessAndRespond(conn net.Conn, buf []byte, addr netip.AddrPort) error {
 		return err
 	}
 
-	var xorMappedAddr XORMappedAddress
+	var srcAddr struct {
+		ip   net.IP
+		port uint16
+	}
 	ip := addr.Addr()
 	if ip.Is4() {
 		ipv4 := ip.As4()
-		xorMappedAddr.IP = ipv4[:]
+		srcAddr.ip = ipv4[:]
 	} else {
 		ipv6 := ip.As16()
-		xorMappedAddr.IP = ipv6[:]
+		srcAddr.ip = ipv6[:]
 	}
-	xorMappedAddr.Port = int(addr.Port())
-	if err = xorMappedAddr.AddTo(respMessage); err != nil {
+	srcAddr.port = addr.Port()
+
+	mappedAddr := MappedAddress{IP: srcAddr.ip, Port: int(srcAddr.port)}
+	if err = mappedAddr.AddTo(respMessage); err != nil {
 		return err
 	}
 
-	originAddr, err := netip.ParseAddrPort(conn.LocalAddr().String())
-	if err != nil {
+	xorMappedAddress := XORMappedAddress{IP: srcAddr.ip, Port: int(srcAddr.port)}
+	if err = xorMappedAddress.AddTo(respMessage); err != nil {
 		return err
 	}
 
-	// FIXME: origin address is ipv6 even though the client sent request over ipv4
-	var responseOrigin ResponseOrigin
-	localIP := originAddr.Addr()
-	if localIP.Is4() {
-		ipv4 := localIP.As4()
-		responseOrigin.IP = ipv4[:]
-	} else {
-		ipv6 := localIP.As16()
-		responseOrigin.IP = ipv6[:]
-	}
-	responseOrigin.Port = int(originAddr.Port())
+	if s.sendResponseOrigin {
+		originAddr, err := netip.ParseAddrPort(conn.LocalAddr().String())
+		if err != nil {
+			return err
+		}
 
-	if err = responseOrigin.AddTo(respMessage); err != nil {
-		return err
+		var responseOrigin ResponseOrigin
+		localIP := originAddr.Addr()
+
+		if localIP.Is4() {
+			ipv4 := localIP.As4()
+			responseOrigin.IP = ipv4[:]
+		} else {
+			ipv6 := localIP.As16()
+			responseOrigin.IP = ipv6[:]
+		}
+
+		responseOrigin.Port = int(originAddr.Port())
+
+		if err = responseOrigin.AddTo(respMessage); err != nil {
+			return err
+		}
 	}
 
 	_, err = conn.Write(respMessage.Raw)
