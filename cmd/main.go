@@ -1,9 +1,8 @@
 package main
 
 import (
-	"log"
+	"net/netip"
 	"os"
-	"time"
 
 	"github.com/OmarTariq612/stunserver"
 )
@@ -17,12 +16,6 @@ func main() {
 		addr = os.Args[1]
 	}
 
-	server, err := stunserver.NewServer(addr, stunserver.WithoutResponseOrigin, stunserver.WithReadTimeoutDuration(10*time.Second))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if err = server.ListenAndServe(); err != nil {
-		log.Fatal(err)
-	}
+	server := stunserver.NewServer(stunserver.WithSimpleMode(netip.MustParseAddrPort(addr)))
+	server.ListenAndServe()
 }
