@@ -27,7 +27,7 @@ func logFatal(msg string, args ...any) {
 
 const (
 	defaultTimeoutDuration = 3 * time.Second
-	defaultPort            = 3478
+	DefaultPort            = 3478
 )
 
 type agent struct {
@@ -75,7 +75,7 @@ func (a *agent) ListenAndServeTCP() {
 	}
 	defer l.Close()
 
-	logInfo("[TCP] Listening on: %s", a.primaryAddr())
+	logInfo("[TCP] Listening on: %s", l.Addr())
 
 	for {
 		conn, err := l.Accept()
@@ -96,7 +96,7 @@ func (a *agent) ListenAndServeUDP() {
 	}
 	defer udpListener.Close()
 
-	logInfo("[UDP] Listening on: %s", a.primaryAddr())
+	logInfo("[UDP] Listening on: %s", udpListener.LocalAddr().String())
 	a.udpConn = udpListener
 
 	buf := make([]byte, MaxMessageSize)
@@ -307,7 +307,7 @@ func NewServer(opts ...ServerOption) *server {
 		readTimeoutDuration:    defaultTimeoutDuration,
 		writeTimeoutDuration:   defaultTimeoutDuration,
 	}
-	s.agents.configureSimpleMode(netip.MustParseAddrPort(fmt.Sprintf("0.0.0.0:%d", defaultPort)), s)
+	s.agents.configureSimpleMode(netip.MustParseAddrPort(fmt.Sprintf("0.0.0.0:%d", DefaultPort)), s)
 
 	for _, opt := range opts {
 		opt(s)

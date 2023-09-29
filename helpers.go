@@ -129,12 +129,5 @@ func BindPacketConn(conn net.PacketConn, addr net.Addr) net.Conn {
 }
 
 func netipAddrToNetAddr(addr netip.AddrPort) (net.IP, int) {
-	ip := addr.Addr()
-	if ip.Is4() {
-		ipv4 := ip.As4()
-		return ipv4[:], int(addr.Port())
-	} else {
-		ipv6 := ip.As16()
-		return ipv6[:], int(addr.Port())
-	}
+	return net.IP(addr.Addr().AsSlice()), int(addr.Port())
 }
