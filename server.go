@@ -28,6 +28,7 @@ func logFatal(msg string, args ...any) {
 const (
 	defaultTimeoutDuration = 3 * time.Second
 	DefaultPort            = 3478
+	AltDefaultPort         = 1234
 )
 
 type agent struct {
@@ -69,7 +70,6 @@ func (a *agent) ListenAndServe() error {
 func (a *agent) ListenAndServeTCP() error {
 	l, err := net.Listen("tcp", a.primaryAddr().String())
 	if err != nil {
-		// logError(err.Error())
 		return err
 	}
 	defer l.Close()
@@ -90,7 +90,6 @@ func (a *agent) ListenAndServeTCP() error {
 func (a *agent) ListenAndServeUDP() error {
 	udpListener, err := net.ListenPacket("udp", a.primaryAddr().String())
 	if err != nil {
-		// logError(err.Error())
 		return err
 	}
 	defer udpListener.Close()
@@ -286,7 +285,6 @@ func (as *agents) configureFullMode(A1, A2 netip.Addr, P1, P2 uint16, server *se
 }
 
 func (as *agents) ListenAndServe() error {
-	// var wg sync.WaitGroup
 	chErr := make(chan error)
 	for i := range as {
 		if as[i].active {

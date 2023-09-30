@@ -1,8 +1,10 @@
 package stunserver
 
 import (
+	"errors"
 	"net"
 	"net/netip"
+	"strings"
 )
 
 // Interfaces that are implemented by message attributes, shorthands for them,
@@ -130,4 +132,59 @@ func BindPacketConn(conn net.PacketConn, addr net.Addr) net.Conn {
 
 func netipAddrToNetAddr(addr netip.AddrPort) (net.IP, int) {
 	return net.IP(addr.Addr().AsSlice()), int(addr.Port())
+}
+
+func isUp(i *net.Interface) bool       { return i.Flags&net.FlagUp != 0 }
+func isLoopback(i *net.Interface) bool { return i.Flags&net.FlagLoopback != 0 }
+
+type Interface struct {
+	*net.Interface
+}
+
+func (i Interface) IsUp() bool       { return isUp(i.Interface) }
+func (i Interface) IsLoopback() bool { return isLoopback(i.Interface) }
+
+type Interfaces []Interface
+
+func GetInterfaces() (Interfaces, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	nifs := make([]Interface, len(interfaces))
+	for i := range interfaces {
+		nifs[i].Interface = &interfaces[i]
+	}
+
+	return nifs, nil
+}
+
+func WalkInterfacesAddrs(f func(Interface, netip.Addr) error) error {
+	nifs, err := GetInterfaces()
+	if err != nil {
+		return err
+	}
+	return nifs.WalkInterfacesAddrs(f)
+}
+
+var ErrStopWalking = errors.New("stop walking")
+
+func (nifs Interfaces) WalkInterfacesAddrs(f func(Interface, netip.Addr) error) error {
+	for _, nif := range nifs {
+		addrs, err := nif.Addrs()
+		if err != nil {
+			return err
+		}
+		for _, addr := range addrs {
+			addrStr := addr.String()
+			if !strings.Contains(addrStr, "/") {
+				continue
+			}
+			if err = f(nif, netip.MustParseAddr(strings.Split(addrStr, "/")[0])); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

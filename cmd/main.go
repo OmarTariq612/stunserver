@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net/netip"
@@ -64,9 +65,9 @@ func parseArgs(args []string) (*config, error) {
 
 	fullModeflags := flag.NewFlagSet("full", flag.ExitOnError)
 	fullHost := fullModeflags.String("host", "", "primary host")
-	fullPort := fullModeflags.Int("port", 0, "primary port")
+	fullPort := fullModeflags.Int("port", stunserver.DefaultPort, "primary port")
 	altFullHost := fullModeflags.String("alt-host", "", "alternative host")
-	altFullPort := fullModeflags.Int("alt-port", 0, "alternative port")
+	altFullPort := fullModeflags.Int("alt-port", stunserver.AltDefaultPort, "alternative port")
 
 	switch {
 	case len(os.Args) < 2:
@@ -85,6 +86,29 @@ func parseArgs(args []string) (*config, error) {
 
 	case os.Args[1] == "full":
 		fullModeflags.Parse(os.Args[2:])
+
+		if *fullHost == "" || *altFullHost == "" {
+			index := 0
+			var hosts [2]netip.Addr
+
+			err := stunserver.WalkInterfacesAddrs(func(_ stunserver.Interface, a netip.Addr) error {
+				if a.Is4() && !a.IsPrivate() && !a.IsLoopback() {
+					hosts[index] = a
+					index++
+					if index >= 2 {
+						return stunserver.ErrStopWalking
+					}
+				}
+				return nil
+			})
+
+			if err == nil || !errors.Is(err, stunserver.ErrStopWalking) {
+				return nil, errors.New("could not detect enough (2) public ips")
+			}
+
+			return &config{mode: full, hosts: hosts, ports: [2]uint16{uint16(*fullPort), uint16(*altFullPort)}}, nil
+		}
+
 		host, err := netip.ParseAddr(*fullHost)
 		if err != nil {
 			return nil, err
