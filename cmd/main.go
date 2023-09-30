@@ -21,7 +21,9 @@ func main() {
 	case simple:
 		addrPort := netip.MustParseAddrPort(config.hosts[0].String() + ":" + strconv.Itoa(int(config.ports[0])))
 		server := stunserver.NewServer(stunserver.WithSimpleMode(addrPort))
-		server.ListenAndServe()
+		if err := server.ListenAndServe(); err != nil {
+			fmt.Println(err)
+		}
 	case full:
 		server := stunserver.NewServer(stunserver.WithFullMode(
 			config.hosts[0],
@@ -29,7 +31,9 @@ func main() {
 			config.ports[0],
 			config.ports[1],
 		))
-		server.ListenAndServe()
+		if err := server.ListenAndServe(); err != nil {
+			fmt.Println(err)
+		}
 	}
 }
 
@@ -55,8 +59,8 @@ func validPort(port int) error {
 
 func parseArgs(args []string) (*config, error) {
 	simpleModeflags := flag.NewFlagSet("simple", flag.ExitOnError)
-	simpleHost := simpleModeflags.String("host", "0.0.0.0", "")
-	simplePort := simpleModeflags.Int("port", stunserver.DefaultPort, "")
+	simpleHost := simpleModeflags.String("host", "0.0.0.0", "host")
+	simplePort := simpleModeflags.Int("port", stunserver.DefaultPort, "port")
 
 	fullModeflags := flag.NewFlagSet("full", flag.ExitOnError)
 	fullHost := fullModeflags.String("host", "", "primary host")

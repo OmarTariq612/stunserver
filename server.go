@@ -59,19 +59,18 @@ func (a *agent) otherAddrPort() netip.AddrPort {
 	return netip.MustParseAddrPort(a.otherAddr().String() + ":" + strconv.Itoa(int(a.otherPort())))
 }
 
-func (a *agent) ListenAndServe() {
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); a.ListenAndServeTCP() }()
-	go func() { defer wg.Done(); a.ListenAndServeUDP() }()
-	wg.Wait()
+func (a *agent) ListenAndServe() error {
+	chErr := make(chan error)
+	go func() { chErr <- a.ListenAndServeTCP() }()
+	go func() { chErr <- a.ListenAndServeUDP() }()
+	return <-chErr
 }
 
-func (a *agent) ListenAndServeTCP() {
+func (a *agent) ListenAndServeTCP() error {
 	l, err := net.Listen("tcp", a.primaryAddr().String())
 	if err != nil {
-		logError(err.Error())
-		return
+		// logError(err.Error())
+		return err
 	}
 	defer l.Close()
 
@@ -88,11 +87,11 @@ func (a *agent) ListenAndServeTCP() {
 	}
 }
 
-func (a *agent) ListenAndServeUDP() {
+func (a *agent) ListenAndServeUDP() error {
 	udpListener, err := net.ListenPacket("udp", a.primaryAddr().String())
 	if err != nil {
-		logError(err.Error())
-		return
+		// logError(err.Error())
+		return err
 	}
 	defer udpListener.Close()
 
@@ -286,6 +285,17 @@ func (as *agents) configureFullMode(A1, A2 netip.Addr, P1, P2 uint16, server *se
 	}
 }
 
+func (as *agents) ListenAndServe() error {
+	// var wg sync.WaitGroup
+	chErr := make(chan error)
+	for i := range as {
+		if as[i].active {
+			go func(i int) { chErr <- as[i].ListenAndServe() }(i)
+		}
+	}
+	return <-chErr
+}
+
 type server struct {
 	agents agents
 
@@ -348,13 +358,6 @@ func WithWriteTimeoutDuration(d time.Duration) ServerOption {
 	}
 }
 
-func (s *server) ListenAndServe() {
-	var wg sync.WaitGroup
-	for i := range s.agents {
-		if s.agents[i].active {
-			wg.Add(1)
-			go func(i int) { defer wg.Done(); s.agents[i].ListenAndServe() }(i)
-		}
-	}
-	wg.Wait()
+func (s *server) ListenAndServe() error {
+	return s.agents.ListenAndServe()
 }
